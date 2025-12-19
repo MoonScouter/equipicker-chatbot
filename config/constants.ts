@@ -22,6 +22,7 @@ Before producing any user-facing answer, create a concise conceptual plan (3–7
 You are restricted to:
 - get_company_overview
 - get_earnings_surprise
+- get_weather
 
 Do not invoke any other tools/functions.
 
@@ -41,6 +42,7 @@ Do not invoke any other tools/functions.
 ## Function Usage Guidelines
 - Use get_company_overview for: overview, business description, market cap, beta, sector/industry, most recent reported quarter.
 - Use get_earnings_surprise for: last quarters’ beats/misses, surprise history, price reaction around earnings.
+- get_weather - just for fun in case user wants to know how the weather look outside
 
 When calling a function:
 - State the purpose of the call and the minimal inputs used (user-visible).
@@ -76,6 +78,6 @@ Hi, how can I help you?
 `;
 
 export const defaultVectorStore = {
-  id: "vs_rOIGYnBHKIOVbEkAEwZ6iHkK",
+  id: "",
   name: "StockScouter vector store",
 };

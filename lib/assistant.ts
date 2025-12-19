@@ -11,6 +11,83 @@ const normalizeAnnotation = (annotation: any): Annotation => ({
   containerId: annotation.container_id ?? annotation.containerId,
 });
 
+const textFromMessageContent = (content: any): string => {
+  if (typeof content === "string") return content;
+  if (!content) return "";
+  if (Array.isArray(content)) {
+    return content
+      .map((part) => {
+        if (!part) return "";
+        if (typeof part === "string") return part;
+        if (typeof part === "object") return part.text ?? "";
+        return "";
+      })
+      .join("");
+  }
+  if (typeof content === "object") return content.text ?? "";
+  return "";
+};
+
+export const sanitizeConversationItems = (items: any[]): any[] => {
+  const sanitized: any[] = [];
+  const seenFunctionCallIds = new Set<string>();
+  for (const item of items ?? []) {
+    if (!item || typeof item !== "object") continue;
+
+    if (item.type === "function_call") {
+      if (
+        typeof item.call_id === "string" &&
+        typeof item.name === "string" &&
+        typeof item.arguments === "string"
+      ) {
+        seenFunctionCallIds.add(item.call_id);
+        sanitized.push({
+          type: "function_call",
+          call_id: item.call_id,
+          name: item.name,
+          arguments: item.arguments,
+        });
+      }
+      continue;
+    }
+
+    if (item.type === "function_call_output") {
+      if (item.call_id && typeof item.output === "string") {
+        // Only include tool outputs that have a matching tool call earlier in the
+        // input history; otherwise OpenAI will reject the request.
+        if (seenFunctionCallIds.has(item.call_id)) {
+          sanitized.push({
+            type: "function_call_output",
+            call_id: item.call_id,
+            output: item.output,
+          });
+        }
+      }
+      continue;
+    }
+
+    if (item.type === "mcp_approval_response") {
+      if (item.approval_request_id) {
+        sanitized.push({
+          type: "mcp_approval_response",
+          approve: !!item.approve,
+          approval_request_id: item.approval_request_id,
+        });
+      }
+      continue;
+    }
+
+    // Accept message-shaped items and normalize their content to plain text.
+    const role = item.role ?? (item.type === "message" ? item.role : undefined);
+    if (role === "user" || role === "assistant" || role === "system") {
+      const contentText = textFromMessageContent(item.content);
+      sanitized.push({ role, content: contentText });
+    }
+  }
+
+  return sanitized;
+};
+
 export interface ContentItem {
   type: "input_text" | "output_text" | "refusal" | "output_audio";
   annotations?: Annotation[];
@@ -146,7 +223,10 @@ export const processMessages = async () => {
 
   const toolsState = useToolsStore.getState() as ToolsState;
 
-  const allConversationItems = conversationItems;
+  const allConversationItems = sanitizeConversationItems(conversationItems);
+  if (allConversationItems.length !== (conversationItems ?? []).length) {
+    setConversationItems(allConversationItems);
+  }
 
   let assistantMessageContent = "";
   let functionArguments = "";
@@ -214,35 +294,6 @@ export const processMessages = async () => {
           setAssistantLoading(false);
           // Handle differently depending on the item type
           switch (item.type) {
-            case "message": {
-              const text = item.content?.text || "";
-              const annotations =
-                item.content?.annotations?.map(normalizeAnnotation) || [];
-              chatMessages.push({
-                type: "message",
-                role: "assistant",
-                content: [
-                  {
-                    type: "output_text",
-                    text,
-                    ...(annotations.length > 0 ? { annotations } : {}),
-                  },
-                ],
-              });
-              conversationItems.push({
-                role: "assistant",
-                content: [
-                  {
-                    type: "output_text",
-                    text,
-                    ...(annotations.length > 0 ? { annotations } : {}),
-                  },
-                ],
-              });
-              setChatMessages([...chatMessages]);
-              setConversationItems([...conversationItems]);
-              break;
-            }
             case "function_call": {
               functionArguments += item.arguments || "";
               chatMessages.push({
@@ -312,18 +363,41 @@ export const processMessages = async () => {
         case "response.output_item.done": {
           // After output item is done, adding tool call ID
           const { item } = data || {};
+
+          // Reasoning items are internal to the Responses API and should not be
+          // replayed as part of the next request payload.
+          if (!item || item.type === "reasoning") {
+            break;
+          }
+
           const toolCallMessage = chatMessages.find((m) => m.id === item.id);
           if (toolCallMessage && toolCallMessage.type === "tool_call") {
             toolCallMessage.call_id = item.call_id;
             setChatMessages([...chatMessages]);
           }
-          conversationItems.push(item);
-          setConversationItems([...conversationItems]);
           if (
             toolCallMessage &&
             toolCallMessage.type === "tool_call" &&
             toolCallMessage.tool_type === "function_call"
           ) {
+            // Persist the function call itself so that the subsequent
+            // `function_call_output` item can be validated by the API.
+            if (item.type === "function_call") {
+              const callId = item.call_id;
+              const alreadyRecorded = conversationItems.some(
+                (it: any) => it?.type === "function_call" && it?.call_id === callId
+              );
+              if (!alreadyRecorded) {
+                conversationItems.push({
+                  type: "function_call",
+                  call_id: callId,
+                  name: item.name,
+                  arguments: item.arguments,
+                });
+                setConversationItems([...conversationItems]);
+              }
+            }
+
             // Handle tool call (execute function)
             const toolResult = await handleTool(
               toolCallMessage.name as keyof typeof functionsMap,
@@ -336,7 +410,6 @@ export const processMessages = async () => {
             conversationItems.push({
               type: "function_call_output",
               call_id: toolCallMessage.call_id,
-              status: "completed",
               output: JSON.stringify(toolResult),
             });
             setConversationItems([...conversationItems]);
@@ -540,6 +613,16 @@ export const processMessages = async () => {
               arguments: mcpApprovalRequestMessage.arguments,
             });
             setChatMessages([...chatMessages]);
+          }
+
+          // Persist the assistant text (built from output_text deltas) as plain
+          // history for the next request, instead of storing raw streamed items.
+          if (assistantMessageContent.trim().length > 0) {
+            conversationItems.push({
+              role: "assistant",
+              content: assistantMessageContent,
+            });
+            setConversationItems([...conversationItems]);
           }
 
           break;
