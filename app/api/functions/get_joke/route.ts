@@ -1,7 +1,14 @@
-export async function GET() {
+export async function GET(request: Request) {
   try {
+    const url = new URL(request.url);
+    const topic = url.searchParams.get("topic") ?? "";
     // Fetch a programming joke
-    const jokeRes = await fetch("https://v2.jokeapi.dev/joke/Programming");
+    let jokeUrl = "https://v2.jokeapi.dev/joke/Programming";
+    if (topic.trim().length > 0) {
+      const encoded = encodeURIComponent(topic.trim());
+      jokeUrl += `?contains=${encoded}`;
+    }
+    const jokeRes = await fetch(jokeUrl);
     if (!jokeRes.ok) throw new Error("Failed to fetch joke");
 
     const jokeData = await jokeRes.json();

@@ -21,6 +21,11 @@ export const toolsList = [
   {
     name: "get_joke",
     description: "Get a programming joke",
-    parameters: {},
+    parameters: {
+      topic: {
+        type: "string",
+        description: "Optional topic or keyword to include in the joke",
+      },
+    },
   },
 ];
