@@ -17,6 +17,19 @@ export const toolsList = [
     },
   },
   {
+    name: "get_earnings_surprise",
+    description:
+      "Retrieve last five quarters reporting dates, actual vs estimated EPS and related surprise, price evolution 5 days before and after the reporting based on the ticker symbol.",
+    strict: false,
+    required: ["ticker"],
+    parameters: {
+      ticker: {
+        type: "string",
+        description: "Ticker symbol for the company (e.g., DOCU.US).",
+      },
+    },
+  },
+  {
     name: "get_weather",
     description: "Get the weather for a given location",
     parameters: {
