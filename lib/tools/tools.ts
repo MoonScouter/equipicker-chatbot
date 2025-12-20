@@ -53,6 +53,11 @@ export const getTools = async (toolsState: ToolsState) => {
   if (functionsEnabled) {
     tools.push(
       ...toolsList.map((tool) => {
+        const required = Array.isArray((tool as any).required)
+          ? (tool as any).required
+          : Object.keys(tool.parameters);
+        const strict =
+          typeof (tool as any).strict === "boolean" ? (tool as any).strict : true;
         return {
           type: "function",
           name: tool.name,
@@ -60,10 +65,10 @@ export const getTools = async (toolsState: ToolsState) => {
           parameters: {
             type: "object",
             properties: { ...tool.parameters },
-            required: Object.keys(tool.parameters),
+            required,
             additionalProperties: false,
           },
-          strict: true,
+          strict,
         };
       })
     );
