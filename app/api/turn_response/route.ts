@@ -19,40 +19,18 @@ const textFromMessageContent = (content: any): string => {
   return "";
 };
 
-const sanitizeInput = (messages: any[]): any[] => {
+const sanitizeInputItems = (items: any[]): any[] => {
   const sanitized: any[] = [];
-  const seenFunctionCallIds = new Set<string>();
-  for (const item of messages ?? []) {
+  for (const item of items ?? []) {
     if (!item || typeof item !== "object") continue;
-
-    if (item.type === "function_call") {
-      if (
-        typeof item.call_id === "string" &&
-        typeof item.name === "string" &&
-        typeof item.arguments === "string"
-      ) {
-        seenFunctionCallIds.add(item.call_id);
-        sanitized.push({
-          type: "function_call",
-          call_id: item.call_id,
-          name: item.name,
-          arguments: item.arguments,
-        });
-      }
-      continue;
-    }
 
     if (item.type === "function_call_output") {
       if (item.call_id && typeof item.output === "string") {
-        // Only include tool outputs that have a matching tool call earlier in the
-        // input history; otherwise OpenAI will reject the request.
-        if (seenFunctionCallIds.has(item.call_id)) {
-          sanitized.push({
-            type: "function_call_output",
-            call_id: item.call_id,
-            output: item.output,
-          });
-        }
+        sanitized.push({
+          type: "function_call_output",
+          call_id: item.call_id,
+          output: item.output,
+        });
       }
       continue;
     }
@@ -78,37 +56,80 @@ const sanitizeInput = (messages: any[]): any[] => {
 
 export async function POST(request: Request) {
   try {
-    const { messages, toolsState } = await request.json();
+    const { inputItems, toolsState, conversationId, debug } =
+      await request.json();
 
     const tools = await getTools(toolsState);
 
     console.log("Tools:", tools);
 
-    const sanitizedMessages = sanitizeInput(
-      Array.isArray(messages) ? messages : []
+    const sanitizedInputItems = sanitizeInputItems(
+      Array.isArray(inputItems) ? inputItems : []
     );
-    console.log("Received messages:", sanitizedMessages);
+    console.log("Received input items:", sanitizedInputItems);
+    if (process.env.NODE_ENV !== "production" && debug?.fullHistory) {
+      console.log("Full history (debug):", debug.fullHistory);
+    }
 
     const key = process.env.OPENAI_API_KEY ?? "(missing)";
     const maskedKey =
       key.length > 10 ? `${key.slice(0, 5)}…${key.slice(-4)}` : key;
     console.log("Using OPENAI_API_KEY:", maskedKey);
 
-    const openai = new OpenAI();
+    if (sanitizedInputItems.length === 0) {
+      return new Response(
+        JSON.stringify({ error: "No input items provided" }),
+        { status: 400 }
+      );
+    }
 
-    const events = await openai.responses.create({
+    const openai = new OpenAI();
+    const requestConversationId = conversationId as string | undefined;
+    let activeConversationId = requestConversationId || null;
+
+    if (!activeConversationId) {
+      const convoRes = await fetch("https://api.openai.com/v1/conversations", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${key}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({}),
+      });
+      if (!convoRes.ok) {
+        const errorText = await convoRes.text();
+        throw new Error(`Failed to create conversation: ${errorText}`);
+      }
+      const convoData = await convoRes.json();
+      activeConversationId = convoData.id ?? null;
+    }
+
+    const requestPayload: any = {
       model: MODEL,
-      input: sanitizedMessages,
+      input: sanitizedInputItems,
       instructions: getDeveloperPrompt(),
       tools,
       stream: true,
       parallel_tool_calls: true,
-    });
+      store: true,
+      ...(activeConversationId ? { conversation: activeConversationId } : {}),
+    };
+
+    console.log("OpenAI request payload:", requestPayload);
+
+    const events = await openai.responses.create(requestPayload);
 
     // Create a ReadableStream that emits SSE data
     const stream = new ReadableStream({
       async start(controller) {
         try {
+          if (!requestConversationId && activeConversationId) {
+            const meta = JSON.stringify({
+              event: "meta.conversation",
+              data: { conversationId: activeConversationId },
+            });
+            controller.enqueue(`data: ${meta}\n\n`);
+          }
           for await (const event of events) {
             // Sending all events to the client
             const data = JSON.stringify({

@@ -25,7 +25,7 @@ export default function Assistant() {
       setAssistantLoading(true);
       addConversationItem(userMessage);
       addChatMessage(userItem);
-      await processMessages();
+      await processMessages([userMessage]);
     } catch (error) {
       console.error("Error processing message:", error);
     }
@@ -42,7 +42,7 @@ export default function Assistant() {
     } as any;
     try {
       addConversationItem(approvalItem);
-      await processMessages();
+      await processMessages([approvalItem]);
     } catch (error) {
       console.error("Error sending approval response:", error);
     }

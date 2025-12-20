@@ -30,40 +30,18 @@ const textFromMessageContent = (content: any): string => {
   return "";
 };
 
-export const sanitizeConversationItems = (items: any[]): any[] => {
+export const sanitizeInputItems = (items: any[]): any[] => {
   const sanitized: any[] = [];
-  const seenFunctionCallIds = new Set<string>();
   for (const item of items ?? []) {
     if (!item || typeof item !== "object") continue;
 
-    if (item.type === "function_call") {
-      if (
-        typeof item.call_id === "string" &&
-        typeof item.name === "string" &&
-        typeof item.arguments === "string"
-      ) {
-        seenFunctionCallIds.add(item.call_id);
-        sanitized.push({
-          type: "function_call",
-          call_id: item.call_id,
-          name: item.name,
-          arguments: item.arguments,
-        });
-      }
-      continue;
-    }
-
     if (item.type === "function_call_output") {
       if (item.call_id && typeof item.output === "string") {
-        // Only include tool outputs that have a matching tool call earlier in the
-        // input history; otherwise OpenAI will reject the request.
-        if (seenFunctionCallIds.has(item.call_id)) {
-          sanitized.push({
-            type: "function_call_output",
-            call_id: item.call_id,
-            output: item.output,
-          });
-        }
+        sanitized.push({
+          type: "function_call_output",
+          call_id: item.call_id,
+          output: item.output,
+        });
       }
       continue;
     }
@@ -159,8 +137,10 @@ type PendingFunctionCall = {
 };
 
 export const handleTurn = async (
-  messages: any[],
+  inputItems: any[],
   toolsState: ToolsState,
+  conversationId: string | null,
+  debug: { fullHistory: any[] } | null,
   onMessage: (data: any) => void | Promise<void>
 ) => {
   try {
@@ -170,9 +150,11 @@ export const handleTurn = async (
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        messages: messages,
-        toolsState: toolsState,
+        inputItems,
+        conversationId,
+        toolsState,
         googleIntegrationEnabled,
+        debug,
       }),
     });
 
@@ -222,21 +204,33 @@ export const handleTurn = async (
   }
 };
 
-export const processMessages = async (toolLoopIteration = 0) => {
+export const processMessages = async (
+  inputItems: any[] = [],
+  toolLoopIteration = 0
+) => {
   const {
     chatMessages,
     conversationItems,
     setChatMessages,
     setConversationItems,
     setAssistantLoading,
+    openaiConversationId,
+    setOpenaiConversationId,
   } = useConversationStore.getState();
 
   const toolsState = useToolsStore.getState() as ToolsState;
 
-  const allConversationItems = sanitizeConversationItems(conversationItems);
-  const conversationItemsState = allConversationItems;
-  if (allConversationItems.length !== (conversationItems ?? []).length) {
+  const conversationItemsState = Array.isArray(conversationItems)
+    ? conversationItems
+    : [];
+  if (!Array.isArray(conversationItems)) {
     setConversationItems(conversationItemsState);
+  }
+  const sanitizedInputItems = sanitizeInputItems(inputItems);
+
+  if (sanitizedInputItems.length === 0) {
+    setAssistantLoading(false);
+    return;
   }
 
   let assistantMessageContent = "";
@@ -244,12 +238,24 @@ export const processMessages = async (toolLoopIteration = 0) => {
   const mcpArgumentsByItemId = new Map<string, string>();
   const pendingFunctionCalls: PendingFunctionCall[] = [];
   const pendingFunctionCallIds = new Set<string>();
+  let hadToolCallsInResponse = false;
 
   await handleTurn(
-    allConversationItems,
+    sanitizedInputItems,
     toolsState,
+    openaiConversationId,
+    process.env.NODE_ENV !== "production"
+      ? { fullHistory: conversationItemsState }
+      : null,
     async ({ event, data }) => {
       switch (event) {
+        case "meta.conversation": {
+          const conversationId = data?.conversationId;
+          if (typeof conversationId === "string" && conversationId.length > 0) {
+            setOpenaiConversationId(conversationId);
+          }
+          break;
+        }
         case "response.output_text.delta":
         case "response.output_text.annotation.added": {
           const { delta, item_id, annotation } = data;
@@ -307,6 +313,7 @@ export const processMessages = async (toolLoopIteration = 0) => {
           // Handle differently depending on the item type
           switch (item.type) {
             case "function_call": {
+              hadToolCallsInResponse = true;
               const initialArgs = item.arguments || "";
               functionArgumentsByItemId.set(item.id, initialArgs);
               let parsedArguments: any = {};
@@ -331,6 +338,7 @@ export const processMessages = async (toolLoopIteration = 0) => {
               break;
             }
             case "web_search_call": {
+              hadToolCallsInResponse = true;
               chatMessages.push({
                 type: "tool_call",
                 tool_type: "web_search_call",
@@ -341,6 +349,7 @@ export const processMessages = async (toolLoopIteration = 0) => {
               break;
             }
             case "file_search_call": {
+              hadToolCallsInResponse = true;
               chatMessages.push({
                 type: "tool_call",
                 tool_type: "file_search_call",
@@ -351,6 +360,7 @@ export const processMessages = async (toolLoopIteration = 0) => {
               break;
             }
             case "mcp_call": {
+              hadToolCallsInResponse = true;
               const initialArgs = item.arguments || "";
               mcpArgumentsByItemId.set(item.id, initialArgs);
               let parsedArguments: any = {};
@@ -375,6 +385,7 @@ export const processMessages = async (toolLoopIteration = 0) => {
               break;
             }
             case "code_interpreter_call": {
+              hadToolCallsInResponse = true;
               chatMessages.push({
                 type: "tool_call",
                 tool_type: "code_interpreter_call",
@@ -408,6 +419,7 @@ export const processMessages = async (toolLoopIteration = 0) => {
           }
 
           if (item.type === "function_call") {
+            hadToolCallsInResponse = true;
             const callId = item.call_id;
             const argumentsText =
               functionArgumentsByItemId.get(item.id) ?? item.arguments ?? "";
@@ -674,7 +686,10 @@ export const processMessages = async (toolLoopIteration = 0) => {
 
           // Persist the assistant text (built from output_text deltas) as plain
           // history for the next request, instead of storing raw streamed items.
-          if (assistantMessageContent.trim().length > 0) {
+          if (
+            assistantMessageContent.trim().length > 0 &&
+            !hadToolCallsInResponse
+          ) {
             conversationItemsState.push({
               role: "assistant",
               content: assistantMessageContent,
@@ -705,6 +720,7 @@ export const processMessages = async (toolLoopIteration = 0) => {
       return;
     }
     let updatedChatMessages = false;
+    const toolOutputItems: any[] = [];
     for (const pendingCall of pendingFunctionCalls) {
       let toolResult: any;
       try {
@@ -719,6 +735,11 @@ export const processMessages = async (toolLoopIteration = 0) => {
       }
 
       const output = JSON.stringify(toolResult);
+      toolOutputItems.push({
+        type: "function_call_output",
+        call_id: pendingCall.callId,
+        output,
+      });
       const toolCallMessage = chatMessages.find(
         (m) => m.id === pendingCall.itemId
       );
@@ -747,6 +768,8 @@ export const processMessages = async (toolLoopIteration = 0) => {
     setConversationItems([...conversationItemsState]);
 
     // Continue the tool loop until the model no longer requests tools.
-    await processMessages(toolLoopIteration + 1);
+    if (toolOutputItems.length > 0) {
+      await processMessages(toolOutputItems, toolLoopIteration + 1);
+    }
   }
 };
