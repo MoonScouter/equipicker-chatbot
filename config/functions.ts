@@ -16,8 +16,11 @@ export const get_weather = async ({
   return res;
 };
 
-export const get_joke = async () => {
-  const res = await fetch(`/api/functions/get_joke`).then((res) => res.json());
+export const get_joke = async ({ topic }: { topic?: string }) => {
+  const query = topic ? `?topic=${encodeURIComponent(topic)}` : "";
+  const res = await fetch(`/api/functions/get_joke${query}`).then((res) =>
+    res.json()
+  );
   return res;
 };
 

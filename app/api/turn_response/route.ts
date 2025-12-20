@@ -102,7 +102,7 @@ export async function POST(request: Request) {
       instructions: getDeveloperPrompt(),
       tools,
       stream: true,
-      parallel_tool_calls: false,
+      parallel_tool_calls: true,
     });
 
     // Create a ReadableStream that emits SSE data

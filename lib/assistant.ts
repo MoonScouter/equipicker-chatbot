@@ -11,6 +11,8 @@ const normalizeAnnotation = (annotation: any): Annotation => ({
   containerId: annotation.container_id ?? annotation.containerId,
 });
 
+const MAX_TOOL_LOOP_ITERATIONS = 4;
+
 const textFromMessageContent = (content: any): string => {
   if (typeof content === "string") return content;
   if (!content) return "";
@@ -148,10 +150,18 @@ export type Item =
   | McpListToolsItem
   | McpApprovalRequestItem;
 
+type PendingFunctionCall = {
+  itemId: string;
+  callId: string;
+  name: keyof typeof functionsMap;
+  arguments: string;
+  parsedArguments: any;
+};
+
 export const handleTurn = async (
   messages: any[],
   toolsState: ToolsState,
-  onMessage: (data: any) => void
+  onMessage: (data: any) => void | Promise<void>
 ) => {
   try {
     const { googleIntegrationEnabled } = useToolsStore.getState();
@@ -194,7 +204,7 @@ export const handleTurn = async (
             break;
           }
           const data = JSON.parse(dataStr);
-          onMessage(data);
+          await onMessage(data);
         }
       }
     }
@@ -204,7 +214,7 @@ export const handleTurn = async (
       const dataStr = buffer.slice(6);
       if (dataStr !== "[DONE]") {
         const data = JSON.parse(dataStr);
-        onMessage(data);
+        await onMessage(data);
       }
     }
   } catch (error) {
@@ -212,7 +222,7 @@ export const handleTurn = async (
   }
 };
 
-export const processMessages = async () => {
+export const processMessages = async (toolLoopIteration = 0) => {
   const {
     chatMessages,
     conversationItems,
@@ -224,14 +234,16 @@ export const processMessages = async () => {
   const toolsState = useToolsStore.getState() as ToolsState;
 
   const allConversationItems = sanitizeConversationItems(conversationItems);
+  const conversationItemsState = allConversationItems;
   if (allConversationItems.length !== (conversationItems ?? []).length) {
-    setConversationItems(allConversationItems);
+    setConversationItems(conversationItemsState);
   }
 
   let assistantMessageContent = "";
-  let functionArguments = "";
-  // For streaming MCP tool call arguments
-  let mcpArguments = "";
+  const functionArgumentsByItemId = new Map<string, string>();
+  const mcpArgumentsByItemId = new Map<string, string>();
+  const pendingFunctionCalls: PendingFunctionCall[] = [];
+  const pendingFunctionCallIds = new Set<string>();
 
   await handleTurn(
     allConversationItems,
@@ -295,15 +307,24 @@ export const processMessages = async () => {
           // Handle differently depending on the item type
           switch (item.type) {
             case "function_call": {
-              functionArguments += item.arguments || "";
+              const initialArgs = item.arguments || "";
+              functionArgumentsByItemId.set(item.id, initialArgs);
+              let parsedArguments: any = {};
+              try {
+                if (initialArgs.length > 0) {
+                  parsedArguments = parse(initialArgs);
+                }
+              } catch {
+                // partial JSON can fail parse; ignore
+              }
               chatMessages.push({
                 type: "tool_call",
                 tool_type: "function_call",
                 status: "in_progress",
                 id: item.id,
                 name: item.name, // function name,e.g. "get_weather"
-                arguments: item.arguments || "",
-                parsedArguments: {},
+                arguments: initialArgs,
+                parsedArguments,
                 output: null,
               });
               setChatMessages([...chatMessages]);
@@ -330,15 +351,24 @@ export const processMessages = async () => {
               break;
             }
             case "mcp_call": {
-              mcpArguments = item.arguments || "";
+              const initialArgs = item.arguments || "";
+              mcpArgumentsByItemId.set(item.id, initialArgs);
+              let parsedArguments: any = {};
+              try {
+                if (initialArgs.length > 0) {
+                  parsedArguments = parse(initialArgs);
+                }
+              } catch {
+                // partial JSON can fail parse; ignore
+              }
               chatMessages.push({
                 type: "tool_call",
                 tool_type: "mcp_call",
                 status: "in_progress",
                 id: item.id,
                 name: item.name,
-                arguments: item.arguments || "",
-                parsedArguments: item.arguments ? parse(item.arguments) : {},
+                arguments: initialArgs,
+                parsedArguments,
                 output: null,
               });
               setChatMessages([...chatMessages]);
@@ -371,52 +401,58 @@ export const processMessages = async () => {
           }
 
           const toolCallMessage = chatMessages.find((m) => m.id === item.id);
+          let updatedChatMessage = false;
           if (toolCallMessage && toolCallMessage.type === "tool_call") {
             toolCallMessage.call_id = item.call_id;
-            setChatMessages([...chatMessages]);
+            updatedChatMessage = true;
           }
-          if (
-            toolCallMessage &&
-            toolCallMessage.type === "tool_call" &&
-            toolCallMessage.tool_type === "function_call"
-          ) {
-            // Persist the function call itself so that the subsequent
-            // `function_call_output` item can be validated by the API.
-            if (item.type === "function_call") {
-              const callId = item.call_id;
-              const alreadyRecorded = conversationItems.some(
+
+          if (item.type === "function_call") {
+            const callId = item.call_id;
+            const argumentsText =
+              functionArgumentsByItemId.get(item.id) ?? item.arguments ?? "";
+            let parsedArguments: any = {};
+            try {
+              if (argumentsText.length > 0) {
+                parsedArguments = parse(argumentsText);
+              }
+            } catch {
+              // partial JSON can fail parse; ignore
+            }
+
+            if (toolCallMessage && toolCallMessage.type === "tool_call") {
+              toolCallMessage.arguments = argumentsText;
+              toolCallMessage.parsedArguments = parsedArguments;
+              updatedChatMessage = true;
+            }
+
+            if (callId && item.name) {
+              const alreadyRecorded = conversationItemsState.some(
                 (it: any) => it?.type === "function_call" && it?.call_id === callId
               );
               if (!alreadyRecorded) {
-                conversationItems.push({
+                conversationItemsState.push({
                   type: "function_call",
                   call_id: callId,
                   name: item.name,
-                  arguments: item.arguments,
+                  arguments: argumentsText,
                 });
-                setConversationItems([...conversationItems]);
+                setConversationItems([...conversationItemsState]);
+              }
+
+              if (!pendingFunctionCallIds.has(callId)) {
+                pendingFunctionCalls.push({
+                  itemId: item.id,
+                  callId,
+                  name: item.name as keyof typeof functionsMap,
+                  arguments: argumentsText,
+                  parsedArguments,
+                });
+                pendingFunctionCallIds.add(callId);
               }
             }
-
-            // Handle tool call (execute function)
-            const toolResult = await handleTool(
-              toolCallMessage.name as keyof typeof functionsMap,
-              toolCallMessage.parsedArguments
-            );
-
-            // Record tool output
-            toolCallMessage.output = JSON.stringify(toolResult);
-            setChatMessages([...chatMessages]);
-            conversationItems.push({
-              type: "function_call_output",
-              call_id: toolCallMessage.call_id,
-              output: JSON.stringify(toolResult),
-            });
-            setConversationItems([...conversationItems]);
-
-            // Create another turn after tool output has been added
-            await processMessages();
           }
+
           if (
             toolCallMessage &&
             toolCallMessage.type === "tool_call" &&
@@ -424,6 +460,10 @@ export const processMessages = async () => {
           ) {
             toolCallMessage.output = item.output;
             toolCallMessage.status = "completed";
+            updatedChatMessage = true;
+          }
+
+          if (updatedChatMessage) {
             setChatMessages([...chatMessages]);
           }
           break;
@@ -431,17 +471,20 @@ export const processMessages = async () => {
 
         case "response.function_call_arguments.delta": {
           // Streaming arguments delta to show in the chat
-          functionArguments += data.delta || "";
-          let parsedFunctionArguments = {};
+          const itemId = data.item_id;
+          const currentArgs = functionArgumentsByItemId.get(itemId) || "";
+          const nextArgs = currentArgs + (data.delta || "");
+          functionArgumentsByItemId.set(itemId, nextArgs);
+          let parsedFunctionArguments: any = {};
 
           const toolCallMessage = chatMessages.find(
-            (m) => m.id === data.item_id
+            (m) => m.id === itemId
           );
           if (toolCallMessage && toolCallMessage.type === "tool_call") {
-            toolCallMessage.arguments = functionArguments;
+            toolCallMessage.arguments = nextArgs;
             try {
-              if (functionArguments.length > 0) {
-                parsedFunctionArguments = parse(functionArguments);
+              if (nextArgs.length > 0) {
+                parsedFunctionArguments = parse(nextArgs);
               }
               toolCallMessage.parsedArguments = parsedFunctionArguments;
             } catch {
@@ -456,14 +499,20 @@ export const processMessages = async () => {
           // This has the full final arguments string
           const { item_id, arguments: finalArgs } = data;
 
-          functionArguments = finalArgs;
+          functionArgumentsByItemId.set(item_id, finalArgs || "");
+          let parsedFunctionArguments: any = {};
 
-          // Mark the tool_call as "completed" and parse the final JSON
           const toolCallMessage = chatMessages.find((m) => m.id === item_id);
           if (toolCallMessage && toolCallMessage.type === "tool_call") {
             toolCallMessage.arguments = finalArgs;
-            toolCallMessage.parsedArguments = parse(finalArgs);
-            toolCallMessage.status = "completed";
+            try {
+              if (finalArgs && finalArgs.length > 0) {
+                parsedFunctionArguments = parse(finalArgs);
+              }
+              toolCallMessage.parsedArguments = parsedFunctionArguments;
+            } catch {
+              // partial JSON can fail parse; ignore
+            }
             setChatMessages([...chatMessages]);
           }
           break;
@@ -471,16 +520,19 @@ export const processMessages = async () => {
         // Streaming MCP tool call arguments
         case "response.mcp_call_arguments.delta": {
           // Append delta to MCP arguments
-          mcpArguments += data.delta || "";
+          const itemId = data.item_id;
+          const currentArgs = mcpArgumentsByItemId.get(itemId) || "";
+          const nextArgs = currentArgs + (data.delta || "");
+          mcpArgumentsByItemId.set(itemId, nextArgs);
           let parsedMcpArguments: any = {};
           const toolCallMessage = chatMessages.find(
-            (m) => m.id === data.item_id
+            (m) => m.id === itemId
           );
           if (toolCallMessage && toolCallMessage.type === "tool_call") {
-            toolCallMessage.arguments = mcpArguments;
+            toolCallMessage.arguments = nextArgs;
             try {
-              if (mcpArguments.length > 0) {
-                parsedMcpArguments = parse(mcpArguments);
+              if (nextArgs.length > 0) {
+                parsedMcpArguments = parse(nextArgs);
               }
               toolCallMessage.parsedArguments = parsedMcpArguments;
             } catch {
@@ -493,11 +545,16 @@ export const processMessages = async () => {
         case "response.mcp_call_arguments.done": {
           // Final MCP arguments string received
           const { item_id, arguments: finalArgs } = data;
-          mcpArguments = finalArgs;
+          mcpArgumentsByItemId.set(item_id, finalArgs || "");
           const toolCallMessage = chatMessages.find((m) => m.id === item_id);
           if (toolCallMessage && toolCallMessage.type === "tool_call") {
             toolCallMessage.arguments = finalArgs;
-            toolCallMessage.parsedArguments = parse(finalArgs);
+            try {
+              toolCallMessage.parsedArguments =
+                finalArgs && finalArgs.length > 0 ? parse(finalArgs) : {};
+            } catch {
+              // partial JSON can fail parse; ignore
+            }
             toolCallMessage.status = "completed";
             setChatMessages([...chatMessages]);
           }
@@ -618,11 +675,11 @@ export const processMessages = async () => {
           // Persist the assistant text (built from output_text deltas) as plain
           // history for the next request, instead of storing raw streamed items.
           if (assistantMessageContent.trim().length > 0) {
-            conversationItems.push({
+            conversationItemsState.push({
               role: "assistant",
               content: assistantMessageContent,
             });
-            setConversationItems([...conversationItems]);
+            setConversationItems([...conversationItemsState]);
           }
 
           break;
@@ -632,4 +689,64 @@ export const processMessages = async () => {
       }
     }
   );
+
+  if (pendingFunctionCalls.length > 0) {
+    if (toolLoopIteration >= MAX_TOOL_LOOP_ITERATIONS) {
+      const warning =
+        "I've hit the limit for tool calls in a single user turn. Please rephrase or split your request and try again.";
+      chatMessages.push({
+        type: "message",
+        role: "assistant",
+        content: [{ type: "output_text", text: warning }],
+      });
+      setChatMessages([...chatMessages]);
+      conversationItemsState.push({ role: "assistant", content: warning });
+      setConversationItems([...conversationItemsState]);
+      return;
+    }
+    let updatedChatMessages = false;
+    for (const pendingCall of pendingFunctionCalls) {
+      let toolResult: any;
+      try {
+        toolResult = await handleTool(
+          pendingCall.name,
+          pendingCall.parsedArguments
+        );
+      } catch (error) {
+        toolResult = {
+          error: error instanceof Error ? error.message : String(error),
+        };
+      }
+
+      const output = JSON.stringify(toolResult);
+      const toolCallMessage = chatMessages.find(
+        (m) => m.id === pendingCall.itemId
+      );
+      if (toolCallMessage && toolCallMessage.type === "tool_call") {
+        toolCallMessage.output = output;
+        toolCallMessage.status = "completed";
+        updatedChatMessages = true;
+      }
+
+      const alreadyRecorded = conversationItemsState.some(
+        (it: any) =>
+          it?.type === "function_call_output" && it?.call_id === pendingCall.callId
+      );
+      if (!alreadyRecorded) {
+        conversationItemsState.push({
+          type: "function_call_output",
+          call_id: pendingCall.callId,
+          output,
+        });
+      }
+    }
+
+    if (updatedChatMessages) {
+      setChatMessages([...chatMessages]);
+    }
+    setConversationItems([...conversationItemsState]);
+
+    // Continue the tool loop until the model no longer requests tools.
+    await processMessages(toolLoopIteration + 1);
+  }
 };
