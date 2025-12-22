@@ -25,7 +25,7 @@ const Chat: React.FC<ChatProps> = ({
   const [inputMessageText, setinputMessageText] = useState<string>("");
   // This state is used to provide better user experience for non-English IMEs such as Japanese
   const [isComposing, setIsComposing] = useState(false);
-  const { isAssistantLoading } = useConversationStore();
+  const { isAssistantLoading, setChatMessages } = useConversationStore();
 
   const scrollToBottom = () => {
     itemsEndRef.current?.scrollIntoView({ behavior: "instant" });
@@ -46,6 +46,21 @@ const Chat: React.FC<ChatProps> = ({
     scrollToBottom();
   }, [items]);
 
+  const handleFollowUpClick = useCallback(
+    (question: string, messageIndex: number) => {
+      setChatMessages(
+        items.map((item, index) => {
+          if (index !== messageIndex) return item;
+          if (item.type !== "message" || item.role !== "assistant") return item;
+          if (!item.followUps) return item;
+          return { ...item, followUps: undefined };
+        })
+      );
+      onSendMessage(question);
+    },
+    [items, onSendMessage, setChatMessages]
+  );
+
   return (
     <div className="flex justify-center items-center size-full">
       <div className="flex grow flex-col h-full max-w-[750px] gap-2">
@@ -58,6 +73,25 @@ const Chat: React.FC<ChatProps> = ({
                 ) : item.type === "message" ? (
                   <div className="flex flex-col gap-1">
                     <Message message={item} />
+                    {item.role === "assistant" &&
+                      item.followUps &&
+                      item.followUps.length > 0 && (
+                        <div className="flex flex-wrap gap-2 pt-1">
+                          {item.followUps.map((question, qIndex) => (
+                            <button
+                              key={`${index}-${qIndex}`}
+                              type="button"
+                              disabled={isAssistantLoading}
+                              onClick={() =>
+                                handleFollowUpClick(question, index)
+                              }
+                              className="rounded-full border border-sky-200 bg-sky-50 px-3 py-1 text-xs text-sky-700 transition hover:border-sky-300 hover:bg-sky-100 disabled:cursor-not-allowed disabled:opacity-60"
+                            >
+                              {question}
+                            </button>
+                          ))}
+                        </div>
+                      )}
                     {item.content &&
                       item.content[0].annotations &&
                       item.content[0].annotations.length > 0 && (
