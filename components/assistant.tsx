@@ -14,6 +14,7 @@ export default function Assistant() {
     setAssistantLoading,
     resetConversation,
     isAssistantLoading,
+    hasHydrated,
   } = useConversationStore();
 
   const handleSendMessage = async (message: string) => {
@@ -55,6 +56,10 @@ export default function Assistant() {
       console.error("Error sending approval response:", error);
     }
   };
+
+  if (!hasHydrated) {
+    return <div className="relative h-full p-4 w-full bg-white" />;
+  }
 
   return (
     <div className="relative h-full p-4 w-full bg-white">

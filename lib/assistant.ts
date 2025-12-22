@@ -4,12 +4,42 @@ import useConversationStore from "@/stores/useConversationStore";
 import useToolsStore, { ToolsState } from "@/stores/useToolsStore";
 import { Annotation } from "@/components/annotations";
 import { functionsMap } from "@/config/functions";
+import {
+  FOLLOWUP_QUESTION_COUNT,
+  FOLLOWUP_QUESTIONS_ENABLED,
+} from "@/config/constants";
 
 const normalizeAnnotation = (annotation: any): Annotation => ({
   ...annotation,
   fileId: annotation.file_id ?? annotation.fileId,
   containerId: annotation.container_id ?? annotation.containerId,
 });
+
+const normalizeFollowUps = (questions: unknown): string[] | null => {
+  if (!Array.isArray(questions)) return null;
+  const cleaned = questions
+    .filter((q) => typeof q === "string")
+    .map((q) => q.trim().replace(/\?+$/, "").trim())
+    .filter((q) => q.length > 0);
+  if (cleaned.length < FOLLOWUP_QUESTION_COUNT) return null;
+  return cleaned.slice(0, FOLLOWUP_QUESTION_COUNT);
+};
+
+const parseStructuredAssistantOutput = (raw: string) => {
+  if (!raw) return { text: "", questions: null as string[] | null };
+  try {
+    const parsed = parse(raw);
+    if (!parsed || typeof parsed !== "object") {
+      return { text: "", questions: null as string[] | null };
+    }
+    const text =
+      typeof (parsed as any).text === "string" ? (parsed as any).text : "";
+    const questions = normalizeFollowUps((parsed as any).questions);
+    return { text, questions };
+  } catch {
+    return { text: "", questions: null as string[] | null };
+  }
+};
 
 const MAX_TOOL_LOOP_ITERATIONS = 4;
 
@@ -80,6 +110,7 @@ export interface MessageItem {
   role: "user" | "assistant" | "system";
   id?: string;
   content: ContentItem[];
+  followUps?: string[];
 }
 
 // Custom items to display in chat
@@ -233,7 +264,11 @@ export const processMessages = async (
     return;
   }
 
-  let assistantMessageContent = "";
+  let assistantMessageRaw = "";
+  let assistantMessageText = "";
+  let assistantMessageId: string | undefined;
+  let assistantFollowUps: string[] | null = null;
+  const assistantAnnotations: Annotation[] = [];
   const functionArgumentsByItemId = new Map<string, string>();
   const mcpArgumentsByItemId = new Map<string, string>();
   const pendingFunctionCalls: PendingFunctionCall[] = [];
@@ -264,7 +299,30 @@ export const processMessages = async (
           if (typeof delta === "string") {
             partial = delta;
           }
-          assistantMessageContent += partial;
+          assistantMessageRaw += partial;
+          if (typeof item_id === "string") {
+            assistantMessageId = item_id;
+          }
+          if (annotation) {
+            assistantAnnotations.push(normalizeAnnotation(annotation));
+          }
+
+          if (FOLLOWUP_QUESTIONS_ENABLED) {
+            const parsed = parseStructuredAssistantOutput(assistantMessageRaw);
+            if (parsed.text) {
+              assistantMessageText = parsed.text;
+            }
+            if (parsed.questions) {
+              assistantFollowUps = parsed.questions;
+            }
+          } else {
+            assistantMessageText = assistantMessageRaw;
+          }
+
+          const displayText = assistantMessageText;
+          if (!displayText) {
+            break;
+          }
 
           // If the last message isn't an assistant message, create a new one
           const lastItem = chatMessages[chatMessages.length - 1];
@@ -281,19 +339,20 @@ export const processMessages = async (
               content: [
                 {
                   type: "output_text",
-                  text: assistantMessageContent,
+                  text: displayText,
+                  annotations:
+                    assistantAnnotations.length > 0
+                      ? [...assistantAnnotations]
+                      : undefined,
                 },
               ],
             } as MessageItem);
           } else {
             const contentItem = lastItem.content[0];
             if (contentItem && contentItem.type === "output_text") {
-              contentItem.text = assistantMessageContent;
-              if (annotation) {
-                contentItem.annotations = [
-                  ...(contentItem.annotations ?? []),
-                  normalizeAnnotation(annotation),
-                ];
+              contentItem.text = displayText;
+              if (assistantAnnotations.length > 0) {
+                contentItem.annotations = [...assistantAnnotations];
               }
             }
           }
@@ -684,15 +743,95 @@ export const processMessages = async (
             setChatMessages([...chatMessages]);
           }
 
+          const parsedAtCompletion = FOLLOWUP_QUESTIONS_ENABLED
+            ? parseStructuredAssistantOutput(assistantMessageRaw)
+            : { text: assistantMessageRaw, questions: null as string[] | null };
+          const fallbackText = assistantMessageRaw.trim().startsWith("{")
+            ? "Sorry, I couldn't format the response."
+            : assistantMessageRaw;
+          const finalText =
+            assistantMessageText || parsedAtCompletion.text || fallbackText;
+          const finalFollowUps =
+            assistantFollowUps ?? parsedAtCompletion.questions;
+
+          let updatedAssistantMessage = false;
+          const targetMessage =
+            (assistantMessageId
+              ? chatMessages.find(
+                  (m) =>
+                    m.type === "message" &&
+                    m.role === "assistant" &&
+                    m.id === assistantMessageId
+                )
+              : undefined) ??
+            [...chatMessages]
+              .reverse()
+              .find(
+                (m) => m.type === "message" && m.role === "assistant"
+              );
+
+          if (finalText && targetMessage && targetMessage.type === "message") {
+            const contentItem = targetMessage.content[0];
+            if (contentItem && contentItem.type === "output_text") {
+              contentItem.text = finalText;
+              if (assistantAnnotations.length > 0) {
+                contentItem.annotations = [...assistantAnnotations];
+              }
+            }
+            updatedAssistantMessage = true;
+          } else if (finalText) {
+            chatMessages.push({
+              type: "message",
+              role: "assistant",
+              id: assistantMessageId,
+              content: [
+                {
+                  type: "output_text",
+                  text: finalText,
+                  annotations:
+                    assistantAnnotations.length > 0
+                      ? [...assistantAnnotations]
+                      : undefined,
+                },
+              ],
+            } as MessageItem);
+            updatedAssistantMessage = true;
+          }
+
+          if (finalFollowUps && targetMessage && targetMessage.type === "message") {
+            targetMessage.followUps = finalFollowUps;
+            updatedAssistantMessage = true;
+          } else if (finalFollowUps && updatedAssistantMessage) {
+            const lastAssistant = [...chatMessages]
+              .reverse()
+              .find(
+                (m) => m.type === "message" && m.role === "assistant"
+              ) as MessageItem | undefined;
+            if (lastAssistant) {
+              lastAssistant.followUps = finalFollowUps;
+            }
+          }
+
+          if (updatedAssistantMessage) {
+            setChatMessages([...chatMessages]);
+          }
+
+          if (
+            finalFollowUps &&
+            process.env.NODE_ENV !== "production"
+          ) {
+            console.log("Follow-up questions:", finalFollowUps);
+          }
+
           // Persist the assistant text (built from output_text deltas) as plain
           // history for the next request, instead of storing raw streamed items.
           if (
-            assistantMessageContent.trim().length > 0 &&
+            finalText.trim().length > 0 &&
             !hadToolCallsInResponse
           ) {
             conversationItemsState.push({
               role: "assistant",
-              content: assistantMessageContent,
+              content: finalText,
             });
             setConversationItems([...conversationItemsState]);
           }

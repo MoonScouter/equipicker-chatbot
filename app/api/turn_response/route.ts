@@ -1,6 +1,9 @@
 import {
   DEFAULT_REASONING_EFFORT,
   DEFAULT_TEXT_VERBOSITY,
+  FOLLOWUP_QUESTIONS_ENABLED,
+  FOLLOWUP_RESPONSE_FORMAT_NAME,
+  FOLLOWUP_RESPONSE_SCHEMA,
   getDeveloperPrompt,
   MODEL,
 } from "@/config/constants";
@@ -109,6 +112,18 @@ export async function POST(request: Request) {
       activeConversationId = convoData.id ?? null;
     }
 
+    const textConfig: any = {
+      verbosity: DEFAULT_TEXT_VERBOSITY,
+    };
+    if (FOLLOWUP_QUESTIONS_ENABLED) {
+      textConfig.format = {
+        type: "json_schema",
+        name: FOLLOWUP_RESPONSE_FORMAT_NAME,
+        schema: FOLLOWUP_RESPONSE_SCHEMA,
+        strict: true,
+      };
+    }
+
     const requestPayload: any = {
       model: MODEL,
       input: sanitizedInputItems,
@@ -118,7 +133,7 @@ export async function POST(request: Request) {
       parallel_tool_calls: true,
       store: true,
       reasoning: { effort: DEFAULT_REASONING_EFFORT },
-      text: { verbosity: DEFAULT_TEXT_VERBOSITY },
+      text: textConfig,
       ...(activeConversationId ? { conversation: activeConversationId } : {}),
     };
 
