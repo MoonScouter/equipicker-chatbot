@@ -1,6 +1,7 @@
 import { MessageItem } from "@/lib/assistant";
 import React from "react";
 import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 
 interface MessageProps {
   message: MessageItem;
@@ -16,7 +17,18 @@ const Message: React.FC<MessageProps> = ({ message }) => {
               <div>
                 <div>
                   <div className="markdown">
-                    <ReactMarkdown>{message.content[0].text as string}</ReactMarkdown>
+                    <ReactMarkdown
+                      remarkPlugins={[remarkGfm]}
+                      components={{
+                        table: ({ children }) => (
+                          <div className="table-wrap">
+                            <table>{children}</table>
+                          </div>
+                        ),
+                      }}
+                    >
+                      {message.content[0].text as string}
+                    </ReactMarkdown>
                   </div>
                 </div>
               </div>
@@ -29,7 +41,18 @@ const Message: React.FC<MessageProps> = ({ message }) => {
             <div className="mr-4 rounded-[16px] px-4 py-2 md:mr-24 text-black bg-white font-light">
               <div>
                 <div className="markdown">
-                  <ReactMarkdown>{message.content[0].text as string}</ReactMarkdown>
+                  <ReactMarkdown
+                    remarkPlugins={[remarkGfm]}
+                    components={{
+                      table: ({ children }) => (
+                        <div className="table-wrap">
+                          <table>{children}</table>
+                        </div>
+                      ),
+                    }}
+                  >
+                    {message.content[0].text as string}
+                  </ReactMarkdown>
                 </div>
                 {message.content[0].annotations &&
                   message.content[0].annotations
