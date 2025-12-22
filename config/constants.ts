@@ -1,5 +1,9 @@
 export const MODEL = "gpt-5-mini";
 
+// Model tuning (applies server-side to every /responses request)
+export const DEFAULT_REASONING_EFFORT = "low" as const;
+export const DEFAULT_TEXT_VERBOSITY = "low" as const;
+
 // Developer prompt for the assistant
 export const DEVELOPER_PROMPT = `
 ## Role
