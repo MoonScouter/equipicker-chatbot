@@ -1,4 +1,9 @@
-import { getDeveloperPrompt, MODEL } from "@/config/constants";
+import {
+  DEFAULT_REASONING_EFFORT,
+  DEFAULT_TEXT_VERBOSITY,
+  getDeveloperPrompt,
+  MODEL,
+} from "@/config/constants";
 import { getTools } from "@/lib/tools/tools";
 import OpenAI from "openai";
 
@@ -112,6 +117,8 @@ export async function POST(request: Request) {
       stream: true,
       parallel_tool_calls: true,
       store: true,
+      reasoning: { effort: DEFAULT_REASONING_EFFORT },
+      text: { verbosity: DEFAULT_TEXT_VERBOSITY },
       ...(activeConversationId ? { conversation: activeConversationId } : {}),
     };
 
