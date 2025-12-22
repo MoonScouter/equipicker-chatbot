@@ -7,6 +7,7 @@ import { functionsMap } from "@/config/functions";
 import {
   FOLLOWUP_QUESTION_COUNT,
   FOLLOWUP_QUESTIONS_ENABLED,
+  USE_STREAMING,
 } from "@/config/constants";
 
 const normalizeAnnotation = (annotation: any): Annotation => ({
@@ -191,6 +192,64 @@ export const handleTurn = async (
 
     if (!response.ok) {
       console.error(`Error: ${response.status} - ${response.statusText}`);
+      return;
+    }
+
+    if (!USE_STREAMING) {
+      const json = await response.json();
+      const responseData = json?.response ?? json;
+      const metaConversationId = json?.conversationId;
+
+      if (metaConversationId) {
+        await onMessage({
+          event: "meta.conversation",
+          data: { conversationId: metaConversationId },
+        });
+      }
+
+      const outputItems = Array.isArray(responseData?.output)
+        ? responseData.output
+        : [];
+      for (const item of outputItems) {
+        await onMessage({ event: "response.output_item.added", data: { item } });
+        await onMessage({ event: "response.output_item.done", data: { item } });
+      }
+
+      const messageItem = outputItems.find(
+        (item: any) => item?.type === "message" && item?.role === "assistant"
+      );
+      const messageId = messageItem?.id;
+      let outputText = "";
+      if (typeof responseData?.output_text === "string") {
+        outputText = responseData.output_text;
+      } else if (messageItem?.content) {
+        outputText = textFromMessageContent(messageItem.content);
+      }
+
+      if (outputText) {
+        await onMessage({
+          event: "response.output_text.delta",
+          data: { delta: outputText, item_id: messageId },
+        });
+        const contentItems = Array.isArray(messageItem?.content)
+          ? messageItem.content
+          : [];
+        for (const contentItem of contentItems) {
+          if (contentItem?.annotations?.length) {
+            for (const annotation of contentItem.annotations) {
+              await onMessage({
+                event: "response.output_text.annotation.added",
+                data: { item_id: messageId, annotation },
+              });
+            }
+          }
+        }
+      }
+
+      await onMessage({
+        event: "response.completed",
+        data: { response: responseData },
+      });
       return;
     }
 

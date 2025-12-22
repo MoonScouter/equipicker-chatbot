@@ -6,6 +6,7 @@ import {
   FOLLOWUP_RESPONSE_SCHEMA,
   getDeveloperPrompt,
   MODEL,
+  USE_STREAMING,
 } from "@/config/constants";
 import { getTools } from "@/lib/tools/tools";
 import OpenAI from "openai";
@@ -129,7 +130,7 @@ export async function POST(request: Request) {
       input: sanitizedInputItems,
       instructions: getDeveloperPrompt(),
       tools,
-      stream: true,
+      stream: USE_STREAMING,
       parallel_tool_calls: true,
       store: true,
       reasoning: { effort: DEFAULT_REASONING_EFFORT },
@@ -138,6 +139,14 @@ export async function POST(request: Request) {
     };
 
     console.log("OpenAI request payload:", requestPayload);
+
+    if (!USE_STREAMING) {
+      const response = await openai.responses.create(requestPayload);
+      return Response.json({
+        response,
+        conversationId: activeConversationId,
+      });
+    }
 
     const events = await openai.responses.create(requestPayload);
 

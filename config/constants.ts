@@ -3,6 +3,7 @@ export const MODEL = "gpt-5-mini";
 // Model tuning (applies server-side to every /responses request)
 export const DEFAULT_REASONING_EFFORT = "low" as const;
 export const DEFAULT_TEXT_VERBOSITY = "low" as const;
+export const USE_STREAMING = false;
 
 // Follow-up questions (structured output)
 export const FOLLOWUP_QUESTIONS_ENABLED = true;
