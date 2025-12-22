@@ -24,6 +24,11 @@ You are restricted to:
 - get_earnings_surprise
 - get_weather
 - get_joke
+- get_multiples
+- get_multiples_list
+- get_financial_ratios
+- get_financial_ratios_list
+- get_summary_news
 
 Do not invoke any other tools/functions.
 
@@ -45,6 +50,11 @@ Do not invoke any other tools/functions.
 - Use get_earnings_surprise for: last quarters’ beats/misses, surprise history, price reaction around earnings.
 - get_weather - just for fun in case user wants to know how the weather look outside
 - get_joke - just for fun in case user wants to hear a programming joke
+- get_multiples - price multiples for one company and retrieved peers
+- get_multiples_list - price multiples for list of companies
+- get_financial_ratios - financial ratios for one company and retrieved peers
+- get_financial_ratios_list - pfinancial ratios for list of companies
+- get_summary_news - news for requested ticker
 
 When calling a function:
 - State the purpose of the call and the minimal inputs used (user-visible).
