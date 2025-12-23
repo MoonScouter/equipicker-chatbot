@@ -4,6 +4,14 @@
 
 export const toolsList = [
   {
+    name: "get_documents_list",
+    description:
+      "Retrieve the JSON documents list from the vector store (for available tickers and files).",
+    strict: false,
+    required: [],
+    parameters: {},
+  },
+  {
     name: "get_company_overview",
     description:
       "Retrieve the overview of a company based on the ticker symbol. Retrieved information: name, ticker, sector, industry, market cap, market cap category, beta, most recent quarter.",

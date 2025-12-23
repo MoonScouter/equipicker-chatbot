@@ -1,3 +1,5 @@
+import useToolsStore from "@/stores/useToolsStore";
+
 // Functions mapping to tool calls
 // Define one function per tool call - each tool call should have a matching function
 // Parameters for a tool call are passed as an object to the corresponding function
@@ -12,6 +14,21 @@ export const get_weather = async ({
   const res = await fetch(
     `/api/functions/get_weather?location=${location}&unit=${unit}`
   ).then((res) => res.json());
+
+  return res;
+};
+
+export const get_documents_list = async () => {
+  const { vectorStore } = useToolsStore.getState();
+  const vectorStoreId = vectorStore?.id;
+  if (!vectorStoreId) {
+    return { error: "Missing vector store id" };
+  }
+  const res = await fetch(
+    `/api/functions/get_documents_list?vector_store_id=${encodeURIComponent(
+      vectorStoreId
+    )}`
+  ).then((response) => response.json());
 
   return res;
 };
@@ -119,6 +136,7 @@ export const get_joke = async ({ topic }: { topic?: string }) => {
 };
 
 export const functionsMap = {
+  get_documents_list: get_documents_list,
   get_company_overview: get_company_overview,
   get_earnings_surprise: get_earnings_surprise,
   get_multiples: get_multiples,

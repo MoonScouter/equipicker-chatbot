@@ -7,6 +7,7 @@ import { functionsMap } from "@/config/functions";
 import {
   FOLLOWUP_QUESTION_COUNT,
   FOLLOWUP_QUESTIONS_ENABLED,
+  SECONDARY_MODEL,
   USE_STREAMING,
 } from "@/config/constants";
 
@@ -15,6 +16,39 @@ const normalizeAnnotation = (annotation: any): Annotation => ({
   fileId: annotation.file_id ?? annotation.fileId,
   containerId: annotation.container_id ?? annotation.containerId,
 });
+
+const stripCitationArtifacts = (text: string) => {
+  let cleaned = text;
+  cleaned = cleaned.replace(/\p{Co}+/gu, "");
+  cleaned = cleaned.replace(/filecite/gi, "");
+  cleaned = cleaned.replace(/turn\d+file\d+/gi, "");
+  cleaned = cleaned.replace(/[\u25A0\u25A1\u2605\u2606]+/g, "");
+  cleaned = cleaned.replace(/(?<=\S)[ \t]{2,}(?=\S)/g, " ");
+  cleaned = cleaned.replace(/[ \t]+([.,;:])/g, "$1");
+  cleaned = cleaned.replace(/[ \t]+\n/g, "\n");
+  return cleaned.trim();
+};
+
+const sanitizeAssistantText = (text: string) => stripCitationArtifacts(text);
+
+const truncateByTokenCount = (text: string, maxTokens: number) => {
+  if (!text) return { text: "", truncated: false };
+  const regex = /[A-Za-z0-9_]+|[^\sA-Za-z0-9_]/g;
+  let match: RegExpExecArray | null;
+  let count = 0;
+  let endIndex = text.length;
+  while ((match = regex.exec(text)) !== null) {
+    count += 1;
+    if (count >= maxTokens) {
+      endIndex = regex.lastIndex;
+      break;
+    }
+  }
+  if (count < maxTokens) {
+    return { text, truncated: false };
+  }
+  return { text: text.slice(0, endIndex), truncated: true };
+};
 
 const normalizeFollowUps = (questions: unknown): string[] | null => {
   if (!Array.isArray(questions)) return null;
@@ -34,7 +68,9 @@ const parseStructuredAssistantOutput = (raw: string) => {
       return { text: "", questions: null as string[] | null };
     }
     const text =
-      typeof (parsed as any).text === "string" ? (parsed as any).text : "";
+      typeof (parsed as any).text === "string"
+        ? sanitizeAssistantText((parsed as any).text)
+        : "";
     const questions = normalizeFollowUps((parsed as any).questions);
     return { text, questions };
   } catch {
@@ -173,6 +209,7 @@ export const handleTurn = async (
   toolsState: ToolsState,
   conversationId: string | null,
   debug: { fullHistory: any[] } | null,
+  modelOverride: string | null,
   onMessage: (data: any) => void | Promise<void>
 ) => {
   try {
@@ -187,6 +224,7 @@ export const handleTurn = async (
         toolsState,
         googleIntegrationEnabled,
         debug,
+        modelOverride,
       }),
     });
 
@@ -296,7 +334,8 @@ export const handleTurn = async (
 
 export const processMessages = async (
   inputItems: any[] = [],
-  toolLoopIteration = 0
+  toolLoopIteration = 0,
+  modelOverride: string | null = null
 ) => {
   const {
     chatMessages,
@@ -341,6 +380,7 @@ export const processMessages = async (
     process.env.NODE_ENV !== "production"
       ? { fullHistory: conversationItemsState }
       : null,
+    modelOverride,
     async ({ event, data }) => {
       switch (event) {
         case "meta.conversation": {
@@ -375,7 +415,7 @@ export const processMessages = async (
               assistantFollowUps = parsed.questions;
             }
           } else {
-            assistantMessageText = assistantMessageRaw;
+            assistantMessageText = sanitizeAssistantText(assistantMessageRaw);
           }
 
           const displayText = assistantMessageText;
@@ -808,10 +848,13 @@ export const processMessages = async (
           const fallbackText = assistantMessageRaw.trim().startsWith("{")
             ? "Sorry, I couldn't format the response."
             : assistantMessageRaw;
-          const finalText =
-            assistantMessageText || parsedAtCompletion.text || fallbackText;
+          const finalText = sanitizeAssistantText(
+            assistantMessageText || parsedAtCompletion.text || fallbackText
+          );
           const finalFollowUps =
             assistantFollowUps ?? parsedAtCompletion.questions;
+          const shouldAttachFollowUps =
+            !!finalFollowUps && !hadToolCallsInResponse;
 
           let updatedAssistantMessage = false;
           const targetMessage =
@@ -857,10 +900,14 @@ export const processMessages = async (
             updatedAssistantMessage = true;
           }
 
-          if (finalFollowUps && targetMessage && targetMessage.type === "message") {
+          if (
+            shouldAttachFollowUps &&
+            targetMessage &&
+            targetMessage.type === "message"
+          ) {
             targetMessage.followUps = finalFollowUps;
             updatedAssistantMessage = true;
-          } else if (finalFollowUps && updatedAssistantMessage) {
+          } else if (shouldAttachFollowUps && updatedAssistantMessage) {
             const lastAssistant = [...chatMessages]
               .reverse()
               .find(
@@ -876,7 +923,7 @@ export const processMessages = async (
           }
 
           if (
-            finalFollowUps &&
+            shouldAttachFollowUps &&
             process.env.NODE_ENV !== "production"
           ) {
             console.log("Follow-up questions:", finalFollowUps);
@@ -919,6 +966,9 @@ export const processMessages = async (
     }
     let updatedChatMessages = false;
     const toolOutputItems: any[] = [];
+    const shouldUseSecondaryModel = pendingFunctionCalls.some(
+      (pendingCall) => pendingCall.name === "get_documents_list"
+    );
     for (const pendingCall of pendingFunctionCalls) {
       let toolResult: any;
       try {
@@ -933,6 +983,14 @@ export const processMessages = async (
       }
 
       const output = JSON.stringify(toolResult);
+      let uiOutput = output;
+      if (pendingCall.name === "get_documents_list") {
+        const truncated = truncateByTokenCount(output, 1000);
+        uiOutput = JSON.stringify({
+          truncated: truncated.truncated,
+          preview: truncated.text,
+        });
+      }
       toolOutputItems.push({
         type: "function_call_output",
         call_id: pendingCall.callId,
@@ -942,7 +1000,7 @@ export const processMessages = async (
         (m) => m.id === pendingCall.itemId
       );
       if (toolCallMessage && toolCallMessage.type === "tool_call") {
-        toolCallMessage.output = output;
+        toolCallMessage.output = uiOutput;
         toolCallMessage.status = "completed";
         updatedChatMessages = true;
       }
@@ -967,7 +1025,11 @@ export const processMessages = async (
 
     // Continue the tool loop until the model no longer requests tools.
     if (toolOutputItems.length > 0) {
-      await processMessages(toolOutputItems, toolLoopIteration + 1);
+      await processMessages(
+        toolOutputItems,
+        toolLoopIteration + 1,
+        shouldUseSecondaryModel ? SECONDARY_MODEL : null
+      );
     }
   }
 };
