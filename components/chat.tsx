@@ -23,9 +23,15 @@ const Chat: React.FC<ChatProps> = ({
 }) => {
   const itemsEndRef = useRef<HTMLDivElement>(null);
   const [inputMessageText, setinputMessageText] = useState<string>("");
+  const [activeFollowUpKey, setActiveFollowUpKey] = useState<string | null>(
+    null
+  );
+  const clearFollowUpTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(
+    null
+  );
   // This state is used to provide better user experience for non-English IMEs such as Japanese
   const [isComposing, setIsComposing] = useState(false);
-  const { isAssistantLoading, setChatMessages } = useConversationStore();
+  const { isAssistantLoading } = useConversationStore();
 
   const scrollToBottom = () => {
     itemsEndRef.current?.scrollIntoView({ behavior: "instant" });
@@ -46,19 +52,28 @@ const Chat: React.FC<ChatProps> = ({
     scrollToBottom();
   }, [items]);
 
+  useEffect(() => {
+    return () => {
+      if (clearFollowUpTimeoutRef.current) {
+        clearTimeout(clearFollowUpTimeoutRef.current);
+      }
+    };
+  }, []);
+
   const handleFollowUpClick = useCallback(
-    (question: string, messageIndex: number) => {
-      setChatMessages(
-        items.map((item, index) => {
-          if (index !== messageIndex) return item;
-          if (item.type !== "message" || item.role !== "assistant") return item;
-          if (!item.followUps) return item;
-          return { ...item, followUps: undefined };
-        })
-      );
+    (question: string, followUpKey: string) => {
+      setActiveFollowUpKey(followUpKey);
+      if (clearFollowUpTimeoutRef.current) {
+        clearTimeout(clearFollowUpTimeoutRef.current);
+      }
+      clearFollowUpTimeoutRef.current = setTimeout(() => {
+        setActiveFollowUpKey((current) =>
+          current === followUpKey ? null : current
+        );
+      }, 1200);
       onSendMessage(question);
     },
-    [items, onSendMessage, setChatMessages]
+    [onSendMessage]
   );
 
   return (
@@ -77,19 +92,27 @@ const Chat: React.FC<ChatProps> = ({
                       item.followUps &&
                       item.followUps.length > 0 && (
                         <div className="flex flex-wrap gap-2 pt-1">
-                          {item.followUps.map((question, qIndex) => (
+                          {item.followUps.map((question, qIndex) => {
+                            const followUpKey = `${index}-${qIndex}`;
+                            const isActive = activeFollowUpKey === followUpKey;
+                            return (
                             <button
-                              key={`${index}-${qIndex}`}
+                              key={followUpKey}
                               type="button"
                               disabled={isAssistantLoading}
                               onClick={() =>
-                                handleFollowUpClick(question, index)
+                                handleFollowUpClick(question, followUpKey)
                               }
-                              className="rounded-full border border-sky-200 bg-sky-50 px-3 py-1 text-xs text-sky-700 transition hover:border-sky-300 hover:bg-sky-100 disabled:cursor-not-allowed disabled:opacity-60"
+                              className={`rounded-full border border-sky-200 bg-sky-50 px-3 py-1 text-xs text-sky-700 transition hover:border-sky-300 hover:bg-sky-100 disabled:cursor-not-allowed disabled:opacity-60 ${
+                                isActive
+                                  ? "ring-2 ring-sky-300 bg-sky-100 text-sky-800"
+                                  : ""
+                              }`}
                             >
                               {question}
                             </button>
-                          ))}
+                          );
+                          })}
                         </div>
                       )}
                     {item.content &&

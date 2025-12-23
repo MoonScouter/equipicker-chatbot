@@ -6,6 +6,7 @@ import {
   FOLLOWUP_RESPONSE_SCHEMA,
   getDeveloperPrompt,
   MODEL,
+  SECONDARY_MODEL,
   USE_STREAMING,
 } from "@/config/constants";
 import { getTools } from "@/lib/tools/tools";
@@ -65,7 +66,7 @@ const sanitizeInputItems = (items: any[]): any[] => {
 
 export async function POST(request: Request) {
   try {
-    const { inputItems, toolsState, conversationId, debug } =
+    const { inputItems, toolsState, conversationId, debug, modelOverride } =
       await request.json();
 
     const tools = await getTools(toolsState);
@@ -125,8 +126,11 @@ export async function POST(request: Request) {
       };
     }
 
+    const selectedModel =
+      modelOverride === SECONDARY_MODEL ? SECONDARY_MODEL : MODEL;
+
     const requestPayload: any = {
-      model: MODEL,
+      model: selectedModel,
       input: sanitizedInputItems,
       instructions: getDeveloperPrompt(),
       tools,
