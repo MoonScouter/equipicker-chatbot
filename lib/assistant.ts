@@ -7,6 +7,7 @@ import { functionsMap } from "@/config/functions";
 import {
   FOLLOWUP_QUESTION_COUNT,
   FOLLOWUP_QUESTIONS_ENABLED,
+  NEWS_TOOL_UI_MAX_TOKENS,
   SECONDARY_MODEL,
   USE_STREAMING,
 } from "@/config/constants";
@@ -984,8 +985,14 @@ export const processMessages = async (
 
       const output = JSON.stringify(toolResult);
       let uiOutput = output;
-      if (pendingCall.name === "get_documents_list") {
-        const truncated = truncateByTokenCount(output, 1000);
+      if (
+        pendingCall.name === "get_documents_list" ||
+        pendingCall.name === "get_summary_news"
+      ) {
+        const truncated = truncateByTokenCount(
+          output,
+          NEWS_TOOL_UI_MAX_TOKENS
+        );
         uiOutput = JSON.stringify({
           truncated: truncated.truncated,
           preview: truncated.text,

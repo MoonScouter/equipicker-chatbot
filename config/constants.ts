@@ -6,6 +6,14 @@ export const DEFAULT_REASONING_EFFORT = "low" as const;
 export const DEFAULT_TEXT_VERBOSITY = "low" as const;
 export const USE_STREAMING = false;
 
+// Summary news curation/summarization
+export const NEWS_KEEP_FIRST_N = 100;
+export const NEWS_CURATE_RECENT_N = 100;
+export const NEWS_CURATE_POSITIVE_N = 100;
+export const NEWS_CURATE_NEGATIVE_N = 100;
+export const NEWS_CURATE_MAX_ITEMS = 300;
+export const NEWS_TOOL_UI_MAX_TOKENS = 1000;
+
 // Follow-up questions (structured output)
 export const FOLLOWUP_QUESTIONS_ENABLED = true;
 export const FOLLOWUP_QUESTION_COUNT = 3;
